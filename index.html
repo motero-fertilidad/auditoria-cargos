@@ -214,11 +214,12 @@
     <div class="fi-logo">FI</div>
     <div class="nav-title">
       <h1>Auditoría de Cargos</h1>
-      <p>Fertilidad Integral · GDL, CDMX y Metepec <span style="opacity:.55;">· v1.1</span></p>
+      <p>Fertilidad Integral · GDL, CDMX y Metepec <span style="opacity:.55;">· v1.3</span></p>
     </div>
   </div>
   <div class="nav-right" style="display:flex;align-items:center;gap:10px;">
     <span class="week-badge" id="week-badge">Cargando…</span>
+    <button class="filter-btn" onclick="recargarDatos()">↻ Recargar datos</button>
     <button class="filter-btn" onclick="exportarCSV()">⬇ Exportar pendientes</button>
   </div>
 </div>
@@ -242,7 +243,7 @@
         <button class="upload-btn" onclick="document.getElementById('f-car').click()">Cargos<br><span id="st-cargos" style="font-weight:400;font-size:11px;">Sin cargar</span></button>
       </div>
       <p style="font-size:11.5px;color:var(--muted);margin-top:10px;">
-        También puedes subir un <b>datos.xlsx</b> al repositorio con las hojas <code>citas_gdl</code>, <code>citas_cdmx</code>, <code>citas_mtp</code> y <code>Cargos</code>; el tablero lo carga solo al abrir.
+        El tablero se alimenta solo del <b>Google Sheet</b> configurado; si ese falla, busca un <b>cargos.xlsx</b> en este repositorio. Las cuatro hojas deben llamarse <code>citas_gdl</code>, <code>citas_cdmx</code>, <code>citas_mtp</code> y <code>Cargos</code>. Este archivo es independiente del <code>datos.xlsx</code> del tablero de Experiencia.
       </p>
     </div>
   </details>
@@ -854,52 +855,168 @@ function loadFile(input, type) {
   else reader.readAsText(file, 'UTF-8');
 }
 
-// Carga automática de datos.xlsx: primero del propio repositorio, y si no
-// está, del repositorio de coordinadoras (mismo archivo fuente).
-async function autoCargar() {
-  const status = document.getElementById('load-status');
-  status.textContent = '· cargando datos.xlsx…';
+// ═══════════════════════════════════════════════════════════════════════════
+//  DE DÓNDE SALEN LOS DATOS
+//  ─────────────────────────────────────────────────────────────────────────
+//  Opción A · Google Sheets (recomendada si más de una persona actualiza los
+//  datos). Pega abajo el ID del Sheet y listo: cualquiera con permiso de
+//  edición en ese Sheet actualiza el tablero sin tocar GitHub.
+//
+//    1. Crea un Google Sheet nuevo con cuatro pestañas, nombradas exactamente:
+//         citas_gdl · citas_cdmx · citas_mtp · Cargos
+//    2. Pega en cada una el export de Vrepro CON su fila de encabezados.
+//    3. Compartir → "Cualquier persona con el enlace" → Lector.
+//       (Para que alguien actualice, dale a esa persona permiso de Editor.)
+//    4. Copia el ID de la URL y pégalo aquí abajo:
+//       docs.google.com/spreadsheets/d/[ESTE_PEDAZO_ES_EL_ID]/edit
+//
+//  Opción B · Archivo en el repositorio. Deja SHEET_ID vacío y sube un
+//  cargos.xlsx a este repo con esas mismas cuatro hojas.
+//
+//  Opción C · Carga manual. Siempre disponible con los botones de arriba.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const SHEET_ID = '1RVNqk4noU0suiZllI_BqQiSybRBXkgyEhsiQgGhYD1U';   // ← ID del Google Sheet
+
+// Nombre de la pestaña en el Sheet → llave interna del tablero
+const HOJAS = [
+  ['citas_gdl',  'citas_gdl'],
+  ['citas_cdmx', 'citas_cdmx'],
+  ['citas_mtp',  'citas_met'],
+  ['Cargos',     'cargos'],
+];
+
+// Archivo de respaldo en el repositorio. Se llama cargos.xlsx (no datos.xlsx)
+// para no confundirlo con el archivo del tablero de Experiencia.
+const ARCHIVO_REPO = 'cargos.xlsx';
+
+const CIUDAD_DE = { citas_gdl:'GDL', citas_cdmx:'CDMX', citas_met:'MET' };
+
+function statusCarga(txt) {
+  const el = document.getElementById('load-status');
+  if (el) el.textContent = txt ? '· ' + txt : '';
+}
+function marcarCargado() {
+  ['citas_gdl','citas_cdmx','citas_met','cargos'].forEach(t => {
+    const el = document.getElementById('st-'+t);
+    if (el && state[t]) el.innerHTML = `✔ ${state[t].length} filas`;
+  });
+  state.citas = [...(state.citas_gdl||[]), ...(state.citas_cdmx||[]), ...(state.citas_met||[])];
+}
+function sinDatos(msg) {
+  statusCarga(msg);
+  const wb = document.getElementById('week-badge');
+  if (wb) wb.textContent = 'Sin datos';
+  const up = document.getElementById('upload-details');
+  if (up) up.open = true;
+}
+
+// ─── LECTURA DESDE GOOGLE SHEETS ───────────────────────────────────────────
+// Se usa el endpoint gviz en formato JSON, no CSV, a propósito: el CSV de
+// Google escribe las fechas como "8/1/2026" y no hay forma de saber si es
+// 8 de enero o 1 de agosto. El JSON las devuelve como Date(2026,7,1), sin
+// ambigüedad. Los nombres de pacientes traen comas, así que un CSV partido
+// a mano también rompería las columnas.
+function valorCelda(cell) {
+  if (!cell) return '';
+  const v = cell.v;
+  if (v == null) return '';
+  if (typeof v === 'string') {
+    const d = v.match(/^Date\((\d+),(\d+),(\d+)/);
+    if (d) {
+      const y = d[1], m = String(+d[2] + 1).padStart(2,'0'), dd = String(+d[3]).padStart(2,'0');
+      return `${y}-${m}-${dd}`;
+    }
+  }
+  return v;
+}
+
+async function leerHojaSheets(nombre) {
+  const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq`
+            + `?tqx=out:json&headers=1&sheet=${encodeURIComponent(nombre)}&_=${Date.now()}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`la pestaña "${nombre}" respondió HTTP ${res.status}`);
+  const txt = await res.text();
+  const m = txt.match(/\{[\s\S]*\}/);
+  if (!m) throw new Error(`no se pudo leer la pestaña "${nombre}" (¿el Sheet está compartido con "cualquier persona con el enlace"?)`);
+  const json = JSON.parse(m[0]);
+  if (json.status === 'error') {
+    const det = (json.errors||[]).map(e => e.detailed_message || e.message).join(' ');
+    throw new Error(`Google rechazó la pestaña "${nombre}": ${det.replace(/<[^>]*>/g,'')}`);
+  }
+  const t = json.table || {};
+  const cols = (t.cols||[]).map((c,i) => String(c.label || c.id || i).trim());
+  return (t.rows||[]).map(r => {
+    const o = {};
+    (r.c||[]).forEach((cell,i) => { if (cols[i]) o[cols[i]] = valorCelda(cell); });
+    return o;
+  }).filter(o => Object.values(o).some(v => v !== '' && v != null));
+}
+
+async function cargarDeSheets() {
+  statusCarga('leyendo Google Sheets…');
+  for (const [pestana, llave] of HOJAS) {
+    const rows = await leerHojaSheets(pestana);
+    const ciudad = CIUDAD_DE[llave];
+    if (ciudad) rows.forEach(r => r.__ciudad__ = ciudad);
+    state[llave] = rows;
+  }
+  marcarCargado();
+  statusCarga(`${(state.citas||[]).length} citas y ${(state.cargos||[]).length} cargos · desde Google Sheets`);
+  recalcular();
+}
+
+// ─── LECTURA DESDE ARCHIVO EN EL REPOSITORIO ───────────────────────────────
+async function cargarDeRepo() {
+  statusCarga(`buscando ${ARCHIVO_REPO}…`);
   const urls = [
-    'datos.xlsx?' + Date.now(),
-    'https://raw.githubusercontent.com/motero-fertilidad/auditoria-cargos/main/datos.xlsx',
-    'https://raw.githubusercontent.com/motero-fertilidad/auditoria-coordinadoras-experiencia/main/datos.xlsx',
+    `${ARCHIVO_REPO}?${Date.now()}`,
+    `https://raw.githubusercontent.com/motero-fertilidad/auditoria-cargos/main/${ARCHIVO_REPO}`,
   ];
-  let buffer = null;
+  let buffer = null, err = null;
   for (const url of urls) {
     try {
       const res = await fetch(url, {cache:'no-cache'});
       if (!res.ok) throw new Error('HTTP ' + res.status);
       buffer = await res.arrayBuffer();
       break;
-    } catch(e) { /* siguiente */ }
+    } catch(e) { err = e; }
   }
-  if (!buffer) {
-    status.textContent = '· no se encontró datos.xlsx — carga los archivos a mano';
-    document.getElementById('week-badge').textContent = 'Sin datos';
-    document.getElementById('upload-details').open = true;
-    return;
+  if (!buffer) throw new Error(`no se encontró ${ARCHIVO_REPO} en el repositorio`);
+
+  const wb = XLSX.read(new Uint8Array(buffer), {type:'array', cellDates:true});
+  wb.SheetNames.forEach(name => {
+    const k = name.toLowerCase().trim();
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], {defval:''});
+    if (k === 'citas_gdl')  { rows.forEach(r => r.__ciudad__='GDL');  state.citas_gdl = rows; }
+    else if (k === 'citas_cdmx') { rows.forEach(r => r.__ciudad__='CDMX'); state.citas_cdmx = rows; }
+    else if (k === 'citas_mtp' || k === 'citas_met') { rows.forEach(r => r.__ciudad__='MET'); state.citas_met = rows; }
+    else if (k === 'cargos') state.cargos = rows;
+  });
+  marcarCargado();
+  statusCarga(`${(state.citas||[]).length} citas y ${(state.cargos||[]).length} cargos · desde ${ARCHIVO_REPO}`);
+  recalcular();
+}
+
+// ─── ORQUESTADOR ───────────────────────────────────────────────────────────
+async function autoCargar() {
+  if (SHEET_ID) {
+    try { await cargarDeSheets(); return; }
+    catch(e) {
+      console.error('Google Sheets:', e);
+      statusCarga('falló Google Sheets: ' + e.message);
+    }
   }
-  try {
-    const wb = XLSX.read(new Uint8Array(buffer), {type:'array', cellDates:true});
-    wb.SheetNames.forEach(name => {
-      const k = name.toLowerCase().trim();
-      const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], {defval:''});
-      if (k === 'citas_gdl')  { rows.forEach(r => r.__ciudad__='GDL');  state.citas_gdl = rows; }
-      else if (k === 'citas_cdmx') { rows.forEach(r => r.__ciudad__='CDMX'); state.citas_cdmx = rows; }
-      else if (k === 'citas_mtp' || k === 'citas_met') { rows.forEach(r => r.__ciudad__='MET'); state.citas_met = rows; }
-      else if (k === 'cargos') state.cargos = rows;
-    });
-    state.citas = [...(state.citas_gdl||[]), ...(state.citas_cdmx||[]), ...(state.citas_met||[])];
-    ['citas_gdl','citas_cdmx','citas_met','cargos'].forEach(t => {
-      const el = document.getElementById('st-'+t);
-      if (el && state[t]) el.innerHTML = `✔ ${state[t].length} filas`;
-    });
-    status.textContent = `· ${(state.citas||[]).length} citas y ${(state.cargos||[]).length} cargos`;
-    recalcular();
-  } catch(err) {
-    status.textContent = '· error leyendo datos.xlsx — carga los archivos a mano';
-    document.getElementById('upload-details').open = true;
+  try { await cargarDeRepo(); }
+  catch(e) {
+    console.error('Repositorio:', e);
+    sinDatos((SHEET_ID ? 'tampoco se pudo leer el repositorio — ' : '') + 'carga los archivos a mano');
   }
+}
+
+function recargarDatos() {
+  ['citas_gdl','citas_cdmx','citas_met','cargos','citas'].forEach(k => state[k] = null);
+  autoCargar();
 }
 
 autoCargar();
