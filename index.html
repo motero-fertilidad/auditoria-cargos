@@ -214,7 +214,7 @@
     <div class="fi-logo">FI</div>
     <div class="nav-title">
       <h1>Auditoría de Cargos</h1>
-      <p>Fertilidad Integral · GDL, CDMX y Metepec <span style="opacity:.55;">· v1.0</span></p>
+      <p>Fertilidad Integral · GDL, CDMX y Metepec <span style="opacity:.55;">· v1.1</span></p>
     </div>
   </div>
   <div class="nav-right" style="display:flex;align-items:center;gap:10px;">
@@ -282,7 +282,7 @@
       <div class="legend-row"><span class="legend-dot d-grey"></span><div><b>Cargo ya usado</b> — el cargo correcto existe pero ya cubrió otra cita del mismo paciente ese mes. O falta un cargo, o esas citas van dentro de un paquete.</div></div>
       <div class="legend-row"><span class="legend-dot d-red"></span><div><b>Sin ningún cargo</b> — el paciente no tiene ni un cargo ese mes. Es el cobro realmente en riesgo.</div></div>
       <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border);">
-        <b>Se excluyen del universo</b> (no generan cargo propio): Muestra Espermática para FIV y para Inseminación, Plática de resultados, Llamada Px y los bloques de Gestión Administrativa. Los conceptos y médicos marcados <b>(EX)</b> sí se auditan.
+        <b>Se excluyen del universo</b> porque no generan cargo propio: Muestra Espermática para FIV y para Inseminación, Plática de resultados, Llamada Px, Subsecuente, todo concepto marcado como <b>incluido / incluída</b> (ultrasonido incluido, masaje incluído, acupuntura incluída) y los bloques de Gestión Administrativa. Están listados con su motivo al final del Resumen. Los conceptos y médicos marcados <b>(EX)</b> sí se auditan.
       </div>
     </div>
 
@@ -391,6 +391,11 @@ const EXCLUIDOS = [
   ['muestra espermatica para inseminacion', 'Se cobra dentro de la inseminación'],
   ['platica de resultados',                 'Contacto de acompañamiento, sin cargo propio'],
   ['llamada px',                            'Contacto de acompañamiento, sin cargo propio'],
+  // Todo concepto que el propio nombre marca como "incluido / incluída" ya va
+  // dentro de otro servicio o paquete: ultrasonido incluido, sesión de masaje
+  // incluída, acupuntura incluída, etc.
+  ['incluid',                               'El concepto ya viene marcado como incluido'],
+  ['subsecuente',                           'Va incluida en la consulta o el paquete, sin cargo propio'],
   ['gestion administrativa',                'Bloque interno de agenda, no es una paciente'],
 ];
 function motivoExclusion(concepto) {
